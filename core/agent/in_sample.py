@@ -29,6 +29,7 @@ class InSampleAC(base.Agent):
                  evaluation_criteria,
                  logger
                  ):
+        print("Starting InSampleAC initialization...")
         super(InSampleAC, self).__init__(
             exp_path=exp_path,
             seed=seed,
@@ -73,6 +74,11 @@ class InSampleAC(base.Agent):
         self.beh_pi = get_policy_func()
         self.value_net = FCNetwork(device, np.prod(state_dim), [hidden_units]*2, 1)
 
+        self.total_reward = 0
+        self.total_episodes = 0
+        self.episode_rewards = []
+        self.average_rewards = []
+
         self.pi_optimizer = torch.optim.Adam(list(self.ac.pi.parameters()), learning_rate)
         self.q_optimizer = torch.optim.Adam(list(self.ac.q1q2.parameters()), learning_rate)
         self.value_optimizer = torch.optim.Adam(list(self.value_net.parameters()), learning_rate)
@@ -88,9 +94,31 @@ class InSampleAC(base.Agent):
         self.tau = tau
         self.polyak = polyak
         self.fill_offline_data_to_buffer()
+        print("InSampleAC initialization complete.")
         self.offline_param_init()
         return
+    
+    def update_stats(self, reward, done):
+        self.episode_reward += reward
+        self.total_reward += reward
+        self.ep_steps += 1
 
+        if done or self.ep_steps == self.timeout:
+            self.total_episodes += 1
+            self.episode_rewards.append(self.episode_reward)
+            print(f"Episode {self.total_episodes} completed with total reward: {self.episode_reward}")
+            self.log_episode_stats()
+            self.episode_reward = 0
+            self.ep_steps = 0
+            self.reset = True
+
+    def log_episode_stats(self):
+        if self.total_episodes > 0:
+            average_reward = self.total_reward / self.total_episodes
+        else:
+            average_reward = 0
+        self.average_rewards.append(average_reward)
+        print(f"Average Reward after {self.total_episodes} episodes: {average_reward:.2f}")
 
     def compute_loss_beh_pi(self, data):
         """L_{\omega}, learn behavior policy"""

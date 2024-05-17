@@ -1,97 +1,64 @@
 import pickle
 import time
-import copy
 import numpy as np
-
 import os
-os.environ['D4RL_SUPPRESS_IMPORT_ERROR'] = '1'
-import gym
-import d4rl
-import gzip
+import matplotlib.pyplot as plt
 
-EARLYCUTOFF = "EarlyCutOff"
+def load_data(dataset_path):
+    with open(dataset_path, 'rb') as file:
+        data_dict = pickle.load(file) 
 
-
-def load_testset(env_name, dataset, id):
-    path = None
-    if env_name == 'HalfCheetah':
-        if dataset == 'expert':
-            path = {"env": "halfcheetah-expert-v2"}
-        elif dataset == 'medexp':
-            path = {"env": "halfcheetah-medium-expert-v2"}
-        elif dataset == 'medium':
-            path = {"env": "halfcheetah-medium-v2"}
-        elif dataset == 'medrep':
-            path = {"env": "halfcheetah-medium-replay-v2"}
-    elif env_name == 'Walker2d':
-        if dataset == 'expert':
-            path = {"env": "walker2d-expert-v2"}
-        elif dataset == 'medexp':
-            path = {"env": "walker2d-medium-expert-v2"}
-        elif dataset == 'medium':
-            path = {"env": "walker2d-medium-v2"}
-        elif dataset == 'medrep':
-            path = {"env": "walker2d-medium-replay-v2"}
-    elif env_name == 'Hopper':
-        if dataset == 'expert':
-            path = {"env": "hopper-expert-v2"}
-        elif dataset == 'medexp':
-            path = {"env": "hopper-medium-expert-v2"}
-        elif dataset == 'medium':
-            path = {"env": "hopper-medium-v2"}
-        elif dataset == 'medrep':
-            path = {"env": "hopper-medium-replay-v2"}
-    elif env_name == 'Ant':
-        if dataset == 'expert':
-            path = {"env": "ant-expert-v2"}
-        elif dataset == 'medexp':
-            path = {"env": "ant-medium-expert-v2"}
-        elif dataset == 'medium':
-            path = {"env": "ant-medium-v2"}
-        elif dataset == 'medrep':
-            path = {"env": "ant-medium-replay-v2"}
-    
-    elif env_name == 'Acrobot':
-        if dataset == 'expert':
-            path = {"pkl": "data/dataset/acrobot/transitions_50k/train_40k/{}_run.pkl".format(id)}
-        elif dataset == 'mixed':
-            path = {"pkl": "data/dataset/acrobot/transitions_50k/train_mixed/{}_run.pkl".format(id)}
-    elif env_name == 'LunarLander':
-        if dataset == 'expert':
-            path = {"pkl": "data/dataset/lunar_lander/transitions_50k/train_500k/{}_run.pkl".format(id)}
-        elif dataset == 'mixed':
-            path = {"pkl": "data/dataset/lunar_lander/transitions_50k/train_mixed/{}_run.pkl".format(id)}
-    elif env_name == 'MountainCar':
-        if dataset == 'expert':
-            path = {"pkl": "data/dataset/mountain_car/transitions_50k/train_60k/{}_run.pkl".format(id)}
-        elif dataset == 'mixed':
-            path = {"pkl": "data/dataset/mountain_car/transitions_50k/train_mixed/{}_run.pkl".format(id)}
-    
-    assert path is not None
-    testsets = {}
-    for name in path:
-        if name == "env":
-            env = gym.make(path['env'])
-            try:
-                data = env.get_dataset()
-            except:
-                env = env.unwrapped
-                data = env.get_dataset()
-            testsets[name] = {
-                'states': data['observations'],
-                'actions': data['actions'],
-                'rewards': data['rewards'],
-                'next_states': data['next_observations'],
-                'terminations': data['terminals'],
-            }
-        else:
-            pth = path[name]
-            with open(pth.format(id), 'rb') as f:
-                testsets[name] = pickle.load(f)
-        
-        return testsets
+    if 'pkl' in data_dict:
+        data_dict = data_dict['pkl']
     else:
-        return {}
+        print("No 'pkl' key in data dictionary")
+
+    for key, value in data_dict.items():
+        if hasattr(value, 'shape'):
+            print(f"Loaded data - {key} shape: {value.shape}")
+        else:
+            print(f"Loaded data - {key} is not an array")
+
+    return data_dict
+
+import matplotlib.pyplot as plt
+
+def evaluate_and_visualize(agent, env):
+    grid_shape = env.grid_matrix.shape
+    best_actions = np.empty(grid_shape, dtype=np.object)
+    state_values = np.empty(grid_shape, dtype=np.float32)
+
+    for y in range(grid_shape[0]):
+        for x in range(grid_shape[1]):
+            if not env.is_wall(x, y):
+                state = (x, y)
+                best_actions[y, x] = agent.best_action(state)
+                state_values[y, x] = agent.value_estimation(state)
+            else:
+                best_actions[y, x] = 'Wall'
+                state_values[y, x] = np.nan  
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.imshow(env.grid_matrix, cmap='Greys', interpolation='none')
+
+    for y in range(grid_shape[0]):
+        for x in range(grid_shape[1]):
+            if best_actions[y, x] != 'Wall':
+                action = best_actions[y, x]
+                char = {0: '↑', 1: '↓', 2: '←', 3: '→'}.get(action, '')
+                ax.text(x, y, char, ha='center', va='center', color='blue')
+
+    ax.grid(True)
+    plt.title('Best Actions in Each State')
+    plt.show()
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(state_values, cmap='viridis', interpolation='none')
+    plt.colorbar(label='State Value')
+    plt.title('State Values in Each State')
+    plt.grid(True)
+    plt.show()
+
 
 def run_steps(agent, max_steps, log_interval, eval_pth):
     t0 = time.time()

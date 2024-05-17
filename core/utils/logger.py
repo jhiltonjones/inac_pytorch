@@ -18,22 +18,17 @@ def log_config(cfg):
 
 class Logger:
     def __init__(self, config, log_dir):
+        self.config = config
         log_file = os.path.join(log_dir, 'log')
-        self._logger = logging.getLogger()
-
+        self._logger = logging.getLogger(__name__)
         file_handler = logging.FileHandler(log_file, mode='w')
-        formatter = logging.Formatter('%(asctime)s | %(message)s')
+        formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
         file_handler.setFormatter(formatter)
         self._logger.addHandler(file_handler)
+        self._logger.setLevel(logging.DEBUG)
 
-        stream_handler = logging.StreamHandler(sys.stdout)
-        stream_handler.setFormatter(formatter)
-        self._logger.addHandler(stream_handler)
+    def debug(self, message):
+        self._logger.debug(message)
 
-        self._logger.setLevel(level=logging.INFO)
-
-        self.config = config
-        # if config.tensorboard_logs: self.tensorboard_writer = SummaryWriter(config.get_log_dir())
-
-    def info(self, log_msg):
-        self._logger.info(log_msg)
+    def info(self, message):
+        self._logger.info(message)

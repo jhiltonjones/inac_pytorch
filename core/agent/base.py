@@ -9,20 +9,24 @@ from core.utils import torch_utils
 
 
 class Replay:
-    def __init__(self, memory_size, batch_size, seed=0):
-        self.rng = np.random.RandomState(seed)
+    def __init__(self, memory_size, batch_size, seed=0, logger=None):
         self.memory_size = memory_size
         self.batch_size = batch_size
+        self.rng = np.random.RandomState(seed)
         self.data = []
         self.pos = 0
-    
+        self.logger = logger
+        self.total_reward = 0
+        self.total_episodes = 0
+
     def feed(self, experience):
         if self.pos >= len(self.data):
             self.data.append(experience)
         else:
             self.data[self.pos] = experience
         self.pos = (self.pos + 1) % self.memory_size
-    
+
+
     def feed_batch(self, experience):
         for exp in experience:
             self.feed(exp)
@@ -30,11 +34,25 @@ class Replay:
     def sample(self, batch_size=None):
         if batch_size is None:
             batch_size = self.batch_size
+
         sampled_indices = [self.rng.randint(0, len(self.data)) for _ in range(batch_size)]
-        sampled_data = [self.data[ind] for ind in sampled_indices]
-        batch_data = list(map(lambda x: np.asarray(x), zip(*sampled_data)))
-        
-        return batch_data
+        sampled_experiences = [self.data[ind] for ind in sampled_indices]
+
+        states = [exp[0] for exp in sampled_experiences]
+        actions = [exp[1] for exp in sampled_experiences]
+        rewards = [exp[2] for exp in sampled_experiences]
+        next_states = [exp[3] for exp in sampled_experiences]
+        terminals = [exp[4] for exp in sampled_experiences]
+
+        states = np.array(states)
+        actions = np.array(actions)
+        rewards = np.array(rewards)
+        next_states = np.array(next_states)
+        terminals = np.array(terminals)
+
+        self.logger.debug(f"Sampled batch of size {batch_size}: {sampled_experiences}")
+        return states, actions, rewards, next_states, terminals
+
     
     def sample_array(self, batch_size=None):
         if batch_size is None:
@@ -63,20 +81,8 @@ class Replay:
 
 
 class Agent:
-    def __init__(self,
-                 exp_path,
-                 seed,
-                 env_fn,
-                 timeout,
-                 gamma,
-                 offline_data,
-                 action_dim,
-                 batch_size,
-                 use_target_network,
-                 target_network_update_freq,
-                 evaluation_criteria,
-                 logger
-                 ):
+    def __init__(self, exp_path, seed, env_fn, timeout, gamma, offline_data, action_dim, batch_size, use_target_network, target_network_update_freq, evaluation_criteria, logger):
+        self.logger = logger
         self.exp_path = exp_path
         self.seed = seed
         self.use_target_network = use_target_network
@@ -87,10 +93,9 @@ class Agent:
         self.env = env_fn()
         self.eval_env = copy.deepcopy(env_fn)()
         self.offline_data = offline_data
-        self.replay = Replay(memory_size=2000000, batch_size=batch_size, seed=seed)
+        self.replay = Replay(memory_size=2000000, batch_size=batch_size, seed=seed, logger=logger)
         self.state_normalizer = lambda x: x
         self.evaluation_criteria = evaluation_criteria
-        self.logger = logger
         self.timeout = timeout
         self.action_dim = action_dim
 
@@ -149,38 +154,57 @@ class Agent:
         return data
 
     def fill_offline_data_to_buffer(self):
+        print("Filling offline data to buffer...")
         self.trainset = self.training_set_construction(self.offline_data)
         train_s, train_a, train_r, train_ns, train_t = self.trainset
         for idx in range(len(train_s)):
             self.replay.feed([train_s[idx], train_a[idx], train_r[idx], train_ns[idx], train_t[idx]])
+        print("Data filled in buffer.")
 
     def step(self):
-        # trans = self.feed_data()
-        self.update_stats(0, None)
-        data = self.get_data()
-        losses = self.update(data)
+        if self.reset:
+            self.state = self.env.reset()
+            self.reset = False
+
+        self.action = self.eval_step(self.state)
+        self.next_state, reward, done, _ = self.env.step(self.action)
+
+        print(f"Step {self.total_steps}: State {self.state}, Action {self.action}, Reward {reward}, Next State {self.next_state}, Done {done}")
+        print(f"Step {self.total_steps}: Reward Received: {reward}")
+
+        self.replay.feed([self.state, self.action, reward, self.next_state, done])
+        self.state = self.next_state
+        self.update_stats(reward, done)
+        if done:
+            self.reset = True
+        
+        self.total_steps += 1
+        data = self.get_data() 
+        losses = self.update(data)  
+
+        if self.total_steps % 100 == 0:
+            print(f"Losses at step {self.total_steps}: {losses}")
+
         return losses
     
     def update(self, data):
         raise NotImplementedError
         
+
     def update_stats(self, reward, done):
         self.episode_reward += reward
-        self.total_steps += 1
+        self.total_reward += reward
         self.ep_steps += 1
+
         if done or self.ep_steps == self.timeout:
+            self.total_episodes += 1
             self.episode_rewards.append(self.episode_reward)
-            self.num_episodes += 1
-            if self.evaluation_criteria == "return":
-                self.add_train_log(self.episode_reward)
-            elif self.evaluation_criteria == "steps":
-                self.add_train_log(self.ep_steps)
-            else:
-                raise NotImplementedError
+            print(f"Episode {self.num_episodes} completed with reward {self.episode_reward}")
+            self.log_episode_stats()
             self.episode_reward = 0
             self.ep_steps = 0
             self.reset = True
-
+            
     def add_train_log(self, ep_return):
         self.ep_returns_queue_train[self.train_stats_counter] = ep_return
         self.train_stats_counter += 1
@@ -198,7 +222,7 @@ class Agent:
         total_actions = []
         total_returns = []
         for ep in range(total_ep):
-            ep_return, steps, traj = self.eval_episode(log_traj=log_traj)
+            ep_return, steps, traj = self.eval_episode(log_traj=log_traj, render= False)
             total_steps += steps
             total_states += traj[0]
             total_actions += traj[1]
@@ -215,17 +239,20 @@ class Agent:
                 raise NotImplementedError
         return [total_states, total_actions, total_returns]
 
-    def eval_episode(self, log_traj=False):
+    def eval_episode(self, log_traj=False, render=False):
         ep_traj = []
         state = self.eval_env.reset()
         total_rewards = 0
         ep_steps = 0
         done = False
-        while True:
+        while not done:
+            if render:
+                self.eval_env.render()
+
             action = self.eval_step(state)
             last_state = state
-            state, reward, done, _ = self.eval_env.step([action])
-            # print(np.abs(state-last_state).sum(), "\n",action)
+            state, reward, done, _ = self.eval_env.step(action)
+
             if log_traj:
                 ep_traj.append([last_state, action, reward])
             total_rewards += reward
@@ -254,7 +281,7 @@ class Agent:
         log_str = '%s LOG: steps %d, episodes %3d, ' \
                   'returns %.2f/%.2f/%.2f/%.2f/%d (mean/median/min/max/num), %.2f steps/s'
 
-        self.logger.info(log_str % (name, self.total_steps, total_episodes, mean, median,
+        print(log_str % (name, self.total_steps, total_episodes, mean, median,
                                         min_, max_, len(rewards),
                                         elapsed_time))
         return mean, median, min_, max_
@@ -276,16 +303,15 @@ class Agent:
         o = torch_utils.tensor(self.state_normalizer(o), self.device)
         with torch.no_grad():
             a, _ = self.ac.pi(o, deterministic=eval)
-        a = torch_utils.to_np(a)
-        return a
+        return torch_utils.to_np(a)
+
 
     def eval_step(self, state):
         a = self.policy(state, eval=True)
+        # print(f"Chosen action: {a}")
         return a
-
+    
     def training_set_construction(self, data_dict):
-        assert len(list(data_dict.keys())) == 1
-        data_dict = data_dict[list(data_dict.keys())[0]]
         states = data_dict['states']
         actions = data_dict['actions']
         rewards = data_dict['rewards']
